@@ -154,6 +154,7 @@ async function start() {
       oa.on("close", (code, reason) => {
         console.log("🔌 OpenAI WebSocket closed");
         console.log("Close code:", code, "Reason:", reason.toString());
+        if (autoCommitInterval) clearInterval(autoCommitInterval);
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
         }
@@ -162,6 +163,34 @@ async function start() {
       // Счетчик отправленных аудио чанков для отслеживания количества данных
       let audioChunksSent = 0;
       let lastAudioTime = 0;
+
+      // Автоматически отправляем commit если нет активности более 3 секунд
+      // Но только если было отправлено хотя бы немного аудио данных
+      const autoCommitInterval = setInterval(() => {
+        if (oa.readyState === WebSocket.OPEN && esp.readyState === WebSocket.OPEN) {
+          const timeSinceLastAudio = Date.now() - lastAudioTime;
+          // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
+          if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
+            console.log(`⏰ Auto-committing after ${timeSinceLastAudio}ms of silence (${audioChunksSent} chunks)`);
+            oa.send(JSON.stringify({
+              type: "input_audio_buffer.commit"
+            }));
+            
+            setTimeout(() => {
+              oa.send(JSON.stringify({
+                type: "response.create",
+                response: {
+                  modalities: ["text"]
+                }
+              }));
+            }, 100);
+            
+            // Сбрасываем счетчик после commit
+            audioChunksSent = 0;
+            lastAudioTime = 0;
+          }
+        }
+      }, 1000); // Проверяем каждую секунду
 
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
@@ -214,6 +243,7 @@ async function start() {
       esp.on("close", (code, reason) => {
         console.log("🔌 ESP disconnected");
         console.log("Close code:", code, "Reason:", reason.toString());
+        if (autoCommitInterval) clearInterval(autoCommitInterval);
         if (oa.readyState === WebSocket.OPEN) {
           oa.close();
         }
@@ -230,42 +260,6 @@ async function start() {
 
       esp.on("pong", () => {
         console.log("🏓 Received pong from ESP");
-      });
-
-      // Автоматически отправляем commit если нет активности более 3 секунд
-      // Но только если было отправлено хотя бы немного аудио данных
-      const autoCommitInterval = setInterval(() => {
-        if (oa.readyState === WebSocket.OPEN && esp.readyState === WebSocket.OPEN) {
-          const timeSinceLastAudio = Date.now() - lastAudioTime;
-          // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
-          if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
-            console.log(`⏰ Auto-committing after ${timeSinceLastAudio}ms of silence (${audioChunksSent} chunks)`);
-            oa.send(JSON.stringify({
-              type: "input_audio_buffer.commit"
-            }));
-            
-            setTimeout(() => {
-              oa.send(JSON.stringify({
-                type: "response.create",
-                response: {
-                  modalities: ["text"]
-                }
-              }));
-            }, 100);
-            
-            // Сбрасываем счетчик после commit
-            audioChunksSent = 0;
-            lastAudioTime = 0;
-          }
-        }
-      }, 1000); // Проверяем каждую секунду
-      
-      // Очищаем интервал при закрытии соединения
-      oa.on("close", () => {
-        clearInterval(autoCommitInterval);
-      });
-      esp.on("close", () => {
-        clearInterval(autoCommitInterval);
       });
 
     } catch (error) {
