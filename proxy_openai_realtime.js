@@ -151,12 +151,17 @@ async function start() {
         console.error("❌ OpenAI WebSocket error:", error.message);
       });
 
-      oa.on("close", () => {
+      oa.on("close", (code, reason) => {
         console.log("🔌 OpenAI WebSocket closed");
+        console.log("Close code:", code, "Reason:", reason.toString());
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
         }
       });
+
+      // Счетчик отправленных аудио чанков для отслеживания количества данных
+      let audioChunksSent = 0;
+      let lastAudioTime = 0;
 
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
@@ -167,6 +172,12 @@ async function start() {
               type: "input_audio_buffer.append",
               audio: msg.toString("base64")
             }));
+            
+            audioChunksSent++;
+            lastAudioTime = Date.now();
+            if (audioChunksSent % 10 === 0) {
+              console.log(`📊 Sent ${audioChunksSent} audio chunks`);
+            }
           } else {
             console.log("⚠️  Audio chunk received but OpenAI not connected");
           }
@@ -177,18 +188,24 @@ async function start() {
           // Если получен сигнал остановки, отправляем commit и response.create
           if (textMsg.includes("STREAM STOPPED") || textMsg.includes("STOP")) {
             if (oa.readyState === WebSocket.OPEN) {
-              oa.send(JSON.stringify({
-                type: "input_audio_buffer.commit"
-              }));
-              
-              setTimeout(() => {
+              // Проверяем, что есть аудио данные перед commit
+              if (audioChunksSent > 0) {
+                console.log(`📤 Committing ${audioChunksSent} audio chunks`);
                 oa.send(JSON.stringify({
-                  type: "response.create",
-                  response: {
-                    modalities: ["text"]
-                  }
+                  type: "input_audio_buffer.commit"
                 }));
-              }, 100);
+                
+                setTimeout(() => {
+                  oa.send(JSON.stringify({
+                    type: "response.create",
+                    response: {
+                      modalities: ["text"]
+                    }
+                  }));
+                }, 100);
+              } else {
+                console.log("⚠️  No audio data to commit");
+              }
             }
           }
         }
@@ -215,23 +232,41 @@ async function start() {
         console.log("🏓 Received pong from ESP");
       });
 
-      // Автоматически отправляем commit и response.create через 2 секунды после начала потока
-      setTimeout(() => {
+      // Автоматически отправляем commit если нет активности более 3 секунд
+      // Но только если было отправлено хотя бы немного аудио данных
+      const autoCommitInterval = setInterval(() => {
         if (oa.readyState === WebSocket.OPEN && esp.readyState === WebSocket.OPEN) {
-          oa.send(JSON.stringify({
-            type: "input_audio_buffer.commit"
-          }));
-          
-          setTimeout(() => {
+          const timeSinceLastAudio = Date.now() - lastAudioTime;
+          // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
+          if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
+            console.log(`⏰ Auto-committing after ${timeSinceLastAudio}ms of silence (${audioChunksSent} chunks)`);
             oa.send(JSON.stringify({
-              type: "response.create",
-              response: {
-                modalities: ["text"]
-              }
+              type: "input_audio_buffer.commit"
             }));
-          }, 100);
+            
+            setTimeout(() => {
+              oa.send(JSON.stringify({
+                type: "response.create",
+                response: {
+                  modalities: ["text"]
+                }
+              }));
+            }, 100);
+            
+            // Сбрасываем счетчик после commit
+            audioChunksSent = 0;
+            lastAudioTime = 0;
+          }
         }
-      }, 2000);
+      }, 1000); // Проверяем каждую секунду
+      
+      // Очищаем интервал при закрытии соединения
+      oa.on("close", () => {
+        clearInterval(autoCommitInterval);
+      });
+      esp.on("close", () => {
+        clearInterval(autoCommitInterval);
+      });
 
     } catch (error) {
       console.error("❌ Error setting up connection:", error.message);
