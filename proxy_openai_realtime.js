@@ -127,6 +127,21 @@ async function start() {
 
       oa.on("open", () => {
         console.log("✅ Connected to OpenAI Realtime");
+        
+        // Отправляем session.update для инициализации сессии
+        oa.send(JSON.stringify({
+          type: "session.update",
+          session: {
+            modalities: ["audio", "text"],
+            instructions: session.instructions,
+            voice: session.voice,
+            input_audio_format: session.input_audio_format,
+            output_audio_format: session.output_audio_format,
+            turn_detection: session.turn_detection
+          }
+        }));
+        
+        console.log("📤 Sent session.update");
       });
 
       oa.on("message", (data) => {
