@@ -106,10 +106,10 @@ async function start() {
       
       console.log("WebSocket URL:", wsUrl.substring(0, 100) + "..."); // Не логируем полный URL с токеном
 
-      // OpenAI требует Authorization header с Bearer токеном
+      // OpenAI требует Authorization header с client_secret токеном для WebSocket
       const wsOptions = {
         headers: { 
-          Authorization: `Bearer ${OPENAI_KEY}`,
+          Authorization: `Bearer ${clientSecretToken}`,
           "OpenAI-Beta": "realtime=v1"
         },
       };
@@ -127,21 +127,7 @@ async function start() {
 
       oa.on("open", () => {
         console.log("✅ Connected to OpenAI Realtime");
-        
-        // Отправляем session.update для инициализации сессии
-        oa.send(JSON.stringify({
-          type: "session.update",
-          session: {
-            modalities: ["audio", "text"],
-            instructions: session.instructions,
-            voice: session.voice,
-            input_audio_format: session.input_audio_format,
-            output_audio_format: session.output_audio_format,
-            turn_detection: session.turn_detection
-          }
-        }));
-        
-        console.log("📤 Sent session.update");
+        // Сессия уже инициализирована через API, дополнительных действий не требуется
       });
 
       oa.on("message", (data) => {
