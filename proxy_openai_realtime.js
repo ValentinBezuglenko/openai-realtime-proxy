@@ -66,7 +66,8 @@ async function createRealtimeSession() {
 async function start() {
   console.log(`\n🚀 ESP WebSocket proxy listening on ws://0.0.0.0:${PORT}`);
   if (process.env.RENDER_SERVICE_NAME) {
-    console.log(`   Deployed on Render - WebSocket URL: wss://${process.env.RENDER_SERVICE_NAME}.onrender.com:${PORT}`);
+    console.log(`   Deployed on Render - WebSocket URL: wss://${process.env.RENDER_SERVICE_NAME}.onrender.com`);
+    console.log(`   (Render автоматически проксирует WebSocket через порт 443)`);
   }
   const wss = new WebSocketServer({ port: PORT });
 
