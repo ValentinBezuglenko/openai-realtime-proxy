@@ -73,9 +73,18 @@ async function start() {
 
   wss.on("connection", async (esp) => {
     console.log("✅ ESP connected");
+    console.log("ESP IP:", esp._socket.remoteAddress);
+    
+    // Отправляем подтверждение подключения сразу
+    try {
+      esp.send(JSON.stringify({ type: "connection.ack", event: "connected" }));
+    } catch (e) {
+      console.error("Failed to send ack:", e.message);
+    }
 
     try {
       // создаём сессию Realtime и открываем WS к OpenAI
+      console.log("Creating OpenAI Realtime session...");
       const session = await createRealtimeSession();
       console.log("✅ Realtime session created");
 
@@ -151,8 +160,9 @@ async function start() {
         }
       });
 
-      esp.on("close", () => {
+      esp.on("close", (code, reason) => {
         console.log("🔌 ESP disconnected");
+        console.log("Close code:", code, "Reason:", reason.toString());
         if (oa.readyState === WebSocket.OPEN) {
           oa.close();
         }
@@ -160,6 +170,15 @@ async function start() {
 
       esp.on("error", (error) => {
         console.error("❌ ESP WebSocket error:", error.message);
+        console.error("Error stack:", error.stack);
+      });
+
+      esp.on("ping", () => {
+        console.log("🏓 Received ping from ESP");
+      });
+
+      esp.on("pong", () => {
+        console.log("🏓 Received pong from ESP");
       });
 
       // Автоматически отправляем commit и response.create через 2 секунды после начала потока
@@ -182,12 +201,25 @@ async function start() {
 
     } catch (error) {
       console.error("❌ Error setting up connection:", error.message);
-      esp.close();
+      console.error("Error stack:", error.stack);
+      try {
+        esp.send(JSON.stringify({ 
+          type: "error", 
+          error: error.message 
+        }));
+      } catch (sendError) {
+        console.error("Failed to send error to ESP:", sendError.message);
+      }
+      setTimeout(() => {
+        if (esp.readyState === WebSocket.OPEN) {
+          esp.close();
+        }
+      }, 1000);
     }
   });
 
   wss.on("error", (error) => {
-    console.error("❌ Server error:", error.message);
+    console.error("❌ WebSocket Server error:", error.message);
   });
 }
 
