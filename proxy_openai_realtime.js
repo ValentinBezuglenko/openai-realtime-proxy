@@ -91,18 +91,20 @@ async function start() {
       console.log("Session data:", JSON.stringify(session, null, 2));
 
       // Проверяем структуру ответа OpenAI
-      let wsUrl;
+      let clientSecretToken;
       if (session.client_secret && session.client_secret.value) {
-        wsUrl = session.client_secret.value;
-      } else if (session.url) {
-        wsUrl = session.url;
+        clientSecretToken = session.client_secret.value;
       } else if (session.client_secret) {
-        wsUrl = session.client_secret;
+        clientSecretToken = session.client_secret;
       } else {
-        throw new Error("No WebSocket URL found in session response. Session: " + JSON.stringify(session));
+        throw new Error("No client_secret found in session response. Session: " + JSON.stringify(session));
       }
 
-      console.log("WebSocket URL:", wsUrl);
+      // Формируем WebSocket URL с client_secret токеном
+      // Формат: wss://api.openai.com/v1/realtime?model=...&client_secret=...
+      const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecretToken)}`;
+      
+      console.log("WebSocket URL:", wsUrl.substring(0, 100) + "..."); // Не логируем полный URL с токеном
 
       // Для WebSocket к OpenAI не нужен Authorization header, т.к. аутентификация через client_secret в URL
       const wsOptions = {};
