@@ -1,3 +1,4 @@
+// npm install ws axios
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
 
@@ -7,10 +8,14 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
 async function createRealtimeSession() {
-  const res = await axios.post("https://api.openai.com/v1/realtime/sessions", {
-    model: "gpt-4o-realtime-preview-2024-12-17",
-    voice: "alloy"
-  }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` }});
+  const res = await axios.post(
+    "https://api.openai.com/v1/realtime/sessions",
+    {
+      model: "gpt-4o-realtime-preview-2024-12-17",
+      voice: "alloy"
+    },
+    { headers: { Authorization: `Bearer ${OPENAI_KEY}` } }
+  );
   return res.data;
 }
 
@@ -21,13 +26,17 @@ async function start() {
   wss.on("connection", async (esp) => {
     console.log("✅ ESP connected");
 
-    // создаём Realtime-сессию
+    // создаём Realtime-сессию на OpenAI
     const session = await createRealtimeSession();
     const clientSecret = session.client_secret.value || session.client_secret;
     console.log("🌐 Connecting to OpenAI WS...");
-    const oa = new WebSocket(`wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`, {
-      headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" }
-    });
+
+    const oa = new WebSocket(
+      `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`,
+      {
+        headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" }
+      }
+    );
 
     let openAIConnected = false;
 
@@ -41,21 +50,29 @@ async function start() {
       esp.send(msg); // пересылаем обратно на ESP32
     });
 
-    oa.on("close", () => openAIConnected = false);
-    oa.on("error", (err) => console.error("OpenAI WS error:", err));
+    oa.on("close", () => {
+      openAIConnected = false;
+      console.log("🔌 OpenAI WS closed");
+    });
 
-    // принимаем от ESP32
+    oa.on("error", (err) => console.error("❌ OpenAI WS error:", err));
+
+    // ---------- Обработка сообщений от ESP32 ----------
     esp.on("message", (msg, isBinary) => {
-      if (!openAIConnected) return;
+      if (!openAIConnected) {
+        console.log("⚠️ OpenAI not ready, chunk skipped");
+        return;
+      }
 
       if (isBinary) {
-        // здесь формируем JSON и отправляем на OpenAI
+        // Преобразуем бинарный PCM в base64 и отправляем на OpenAI
         oa.send(JSON.stringify({
           type: "input_audio_buffer.append",
           audio: msg.toString("base64")
         }));
       } else {
         const text = msg.toString();
+        console.log("📝 Text from ESP:", text);
         if (text.includes("STREAM STOPPED")) {
           oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
           oa.send(JSON.stringify({ type: "response.create", response: { modalities: ["text"] }}));
@@ -63,7 +80,10 @@ async function start() {
       }
     });
 
-    esp.on("close", () => oa.close());
+    esp.on("close", () => {
+      console.log("🔌 ESP disconnected");
+      if (oa.readyState === WebSocket.OPEN) oa.close();
+    });
   });
 }
 
