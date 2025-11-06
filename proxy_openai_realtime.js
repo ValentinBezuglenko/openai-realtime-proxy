@@ -136,31 +136,41 @@ async function start() {
                 }
                 autoCommitTimer = setTimeout(() => {
                   if (oa.readyState === WebSocket.OPEN && ready && audioChunksSent > 0) {
-                    console.log(`⏰ Auto-committing ${audioChunksSent} chunks after 2s silence...`);
-                    oa.send(JSON.stringify({
-                      type: "input_audio_buffer.commit"
-                    }));
-                    
+                    const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
+                    console.log(`⏰ Auto-committing ${chunksToCommit} chunks after 3s silence...`);
+                    // Добавляем небольшую задержку перед commit, чтобы убедиться, что все чанки обработаны
                     setTimeout(() => {
-                      console.log(`📤 Sending response.create...`);
                       oa.send(JSON.stringify({
-                        type: "response.create",
-                        response: {
-                          modalities: ["text"]
-                        }
+                        type: "input_audio_buffer.commit"
                       }));
-                    }, 100);
-                    
-                    // Сбрасываем счетчик после commit
-                    audioChunksSent = 0;
+                      
+                      setTimeout(() => {
+                        console.log(`📤 Sending response.create...`);
+                        oa.send(JSON.stringify({
+                          type: "response.create",
+                          response: {
+                            modalities: ["text"]
+                          }
+                        }));
+                      }, 100);
+                      
+                      // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
+                    }, 300); // Дополнительная задержка 300ms перед commit
                   }
-                }, 2000);
+                }, 3000); // Увеличена задержка до 3 секунд
               }
             }
           }
           
           if (parsed.type === "error") {
             console.error("❌ OpenAI Error:", JSON.stringify(parsed, null, 2));
+            
+            // Если ошибка empty buffer, не сбрасываем счетчик и планируем повторную попытку
+            if (parsed.error && parsed.error.code === "input_audio_buffer_commit_empty") {
+              console.log(`⚠️  Empty buffer error, will retry commit after more chunks...`);
+              // Не сбрасываем счетчик - будем ждать новых чанков
+              // Таймер уже сброшен, так что новый чанк установит новый таймер
+            }
           }
           
           if (parsed.type === "response.text.delta") {
@@ -239,30 +249,33 @@ async function start() {
             autoCommitTimer = null;
           }
           
-          // Автоматический commit через 2 секунды после последнего чанка (если достаточно данных)
+          // Автоматический commit через 3 секунды после последнего чанка (если достаточно данных)
           // OpenAI требует минимум 100ms аудио, у нас 1024 байта = ~32ms при 16kHz, так что нужно минимум 4 чанка
           if (audioChunksSent >= 4) {
             autoCommitTimer = setTimeout(() => {
               if (oa.readyState === WebSocket.OPEN && ready && audioChunksSent > 0) {
-                console.log(`⏰ Auto-committing ${audioChunksSent} chunks after 2s silence...`);
-                oa.send(JSON.stringify({
-                  type: "input_audio_buffer.commit"
-                }));
-                
+                const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
+                console.log(`⏰ Auto-committing ${chunksToCommit} chunks after 3s silence...`);
+                // Добавляем небольшую задержку перед commit, чтобы убедиться, что все чанки обработаны
                 setTimeout(() => {
-                  console.log(`📤 Sending response.create...`);
                   oa.send(JSON.stringify({
-                    type: "response.create",
-                    response: {
-                      modalities: ["text"]
-                    }
+                    type: "input_audio_buffer.commit"
                   }));
-                }, 100);
-                
-                // Сбрасываем счетчик после commit
-                audioChunksSent = 0;
+                  
+                  setTimeout(() => {
+                    console.log(`📤 Sending response.create...`);
+                    oa.send(JSON.stringify({
+                      type: "response.create",
+                      response: {
+                        modalities: ["text"]
+                      }
+                    }));
+                  }, 100);
+                  
+                  // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
+                }, 300); // Дополнительная задержка 300ms перед commit
               }
-            }, 2000);
+            }, 3000); // Увеличена задержка до 3 секунд
           }
           
           if (audioChunksSent % 10 === 0) {
@@ -297,7 +310,8 @@ async function start() {
                   autoCommitTimer = null;
                 }
                 
-                console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
+                const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
+                console.log(`📤 Committing ${chunksToCommit} audio chunks after stop signal`);
                 console.log(`⏳ Waiting 500ms before commit...`);
                 // Увеличиваем задержку перед commit, чтобы убедиться, что все последние аудио чанки доставлены
                 setTimeout(() => {
@@ -316,8 +330,7 @@ async function start() {
                     }));
                   }, 100);
                   
-                  // Сбрасываем счетчик после commit
-                  audioChunksSent = 0;
+                  // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
                 }, 500); // Увеличена задержка до 500ms перед commit
               } else {
                 console.log("⚠️  No audio data to commit");
