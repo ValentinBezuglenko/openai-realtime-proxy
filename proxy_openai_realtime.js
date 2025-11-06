@@ -36,31 +36,46 @@ async function start() {
       let ready = false;
       let audioBuffer = [];
       let flushTimer = null;
-      let lastFlushSize = 0;
-      const SAMPLE_RATE = 24000; // Hz
-      const BYTES_PER_SAMPLE = 2; // PCM16
-      const MIN_SEC = 2; // минимум 2 секунды
-      const MIN_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SEC;
 
-      // --- отправка аудио ---
+      const SAMPLE_RATE = 24000;
+      const BYTES_PER_SAMPLE = 2;
+      const MIN_SEC = 2;
+      const MIN_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SEC;
+      const CHUNK_SIZE = 32 * 1024; // 32 KB
+
+      // --- flush аудио ---
       function flushAudioBuffer(force = false) {
         if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN) return;
 
         const full = Buffer.concat(audioBuffer);
+
         if (!force && full.length < MIN_BYTES) {
           console.log(`⏳ Buffer too small (${full.length} bytes), waiting for 2s of audio`);
           return;
         }
 
-        const base64 = full.toString("base64");
-        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+        for (let offset = 0; offset < full.length; offset += CHUNK_SIZE) {
+          const end = Math.min(offset + CHUNK_SIZE, full.length);
+          const chunk = full.slice(offset, end);
+          const base64 = chunk.toString("base64");
+          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+          console.log(`📤 Sent chunk: ${chunk.length} bytes`);
+        }
 
-        lastFlushSize = full.length;
         audioBuffer = [];
         clearTimeout(flushTimer);
         flushTimer = null;
+      }
 
-        console.log(`📤 Sent ${lastFlushSize} bytes to OpenAI`);
+      // --- commit + response.create ---
+      function commitAudio() {
+        if (oa.readyState !== WebSocket.OPEN) return;
+        oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        oa.send(JSON.stringify({
+          type: "response.create",
+          response: { modalities: ["text"], instructions: "Return only transcription" }
+        }));
+        console.log("📨 Commit + response.create sent");
       }
 
       // --- события OpenAI ---
@@ -82,14 +97,13 @@ async function start() {
       oa.on("close", () => console.log("🔌 OpenAI closed"));
       oa.on("error", (e) => console.error("❌ OpenAI WS Error:", e.message));
 
-      // --- получение данных от ESP ---
+      // --- данные от ESP ---
       esp.on("message", (msg) => {
         if (!ready) return;
 
         if (Buffer.isBuffer(msg)) {
           audioBuffer.push(msg);
 
-          // если данных нет 2 секунды, принудительно сбрасываем
           clearTimeout(flushTimer);
           flushTimer = setTimeout(() => flushAudioBuffer(), 2000);
           return;
@@ -98,21 +112,12 @@ async function start() {
         const text = msg.toString().trim();
         if (text.includes("STREAM_STOPPED")) {
           flushAudioBuffer(true);
-          if (lastFlushSize > 0) {
-            oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            oa.send(JSON.stringify({
-              type: "response.create",
-              response: { modalities: ["text"], instructions: "Return only transcription" }
-            }));
-            lastFlushSize = 0;
-            console.log("📨 Commit + response.create sent");
-          }
+          commitAudio();
         }
 
         if (text.includes("STREAM_STARTED")) {
           audioBuffer = [];
           flushTimer = null;
-          lastFlushSize = 0;
           console.log("🎙 Stream started");
         }
       });
@@ -121,14 +126,7 @@ async function start() {
       esp.on("close", () => {
         console.log("🔌 ESP disconnected, flushing remaining buffer");
         flushAudioBuffer(true);
-        if (lastFlushSize > 0 && oa.readyState === WebSocket.OPEN) {
-          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          oa.send(JSON.stringify({
-            type: "response.create",
-            response: { modalities: ["text"], instructions: "Return only transcription" }
-          }));
-          console.log("📨 Commit + response.create sent after ESP disconnect");
-        }
+        commitAudio();
         oa.close();
       });
 
