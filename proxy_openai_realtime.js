@@ -1,25 +1,24 @@
-// === server.js ===
-// Рабочая версия: сохраняет RAW и транскрибирует через OpenAI
-// Запуск: node server.js
-// Требует: npm install ws axios
-
-import fs from "fs";
-import path from "path";
+// npm install ws axios express
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
+import fs from "fs";
+import path from "path";
+import express from "express";
 
 const PORT = process.env.PORT || 8765;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
-// === Подготовка папки для записей ===
-const recordingsDir = path.resolve("recordings");
-if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir);
+const RECORD_DIR = "./recordings";
+if (!fs.existsSync(RECORD_DIR)) fs.mkdirSync(RECORD_DIR);
 
-// === Создаём OpenAI Realtime сессию ===
+let lastWavFile = null;
+
+//
+// === Создание OpenAI Realtime session ===
+//
 async function createRealtimeSession() {
-  const r = await axios.post(
+  const res = await axios.post(
     "https://api.openai.com/v1/realtime/sessions",
     {
       model: "gpt-4o-realtime-preview-2024-12-17",
@@ -32,131 +31,141 @@ async function createRealtimeSession() {
       },
     }
   );
-  return r.data;
+  return res.data;
 }
 
-// === Запуск WebSocket-прокси ===
-async function start() {
-  console.log(`\n🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
-  const wss = new WebSocketServer({ port: PORT, path: "/ws" });
+//
+// === HTTP-сервер для отдачи файлов ===
+//
+const app = express();
+app.use("/recordings", express.static(RECORD_DIR));
+app.get("/latest.wav", (req, res) => {
+  if (!lastWavFile) return res.status(404).send("No file yet");
+  res.sendFile(path.resolve(lastWavFile));
+});
+const httpServer = app.listen(PORT, () => {
+  console.log(`🌐 HTTP ready at http://0.0.0.0:${PORT}`);
+});
 
-  wss.on("connection", async (esp) => {
-    console.log("✅ ESP connected");
-    console.log("ESP IP:", esp._socket.remoteAddress);
+//
+// === WebSocket сервер для ESP ===
+//
+const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-    // Переменные для записи
-    let rawFilePath = "";
-    let rawStream = null;
-    let totalBytes = 0;
-    let session = null;
+wss.on("connection", async (esp) => {
+  console.log("✅ ESP connected");
+  console.log("ESP IP:", esp._socket.remoteAddress);
 
+  const session = await createRealtimeSession();
+  const clientSecret = session?.client_secret?.value || session?.client_secret;
+  if (!clientSecret) {
+    console.error("❌ No client_secret in OpenAI response");
+    return esp.close();
+  }
+
+  const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`;
+
+  const oa = new WebSocket(wsUrl, {
+    headers: {
+      Authorization: `Bearer ${clientSecret}`,
+      "OpenAI-Beta": "realtime=v1",
+    },
+  });
+
+  let ready = false;
+  let audioBuffer = [];
+  let flushTimer = null;
+  let currentFile = null;
+  let writeStream = null;
+
+  const FLUSH_THRESHOLD = 8;
+  const FLUSH_INTERVAL = 200;
+
+  //
+  // === Отправка аудио в OpenAI ===
+  //
+  function flushAudioBuffer() {
+    if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN || !ready) return;
+    const full = Buffer.concat(audioBuffer);
+    const base64 = full.toString("base64");
+
+    oa.send(JSON.stringify({
+      type: "input_audio_buffer.append",
+      audio: base64,
+    }));
+
+    if (writeStream) writeStream.write(full);
+
+    console.log(`📤 Sent batch: ${audioBuffer.length} chunks (${full.length} bytes)`);
+    audioBuffer = [];
+
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+
+  oa.on("open", () => {
+    console.log("🔗 Connected to OpenAI Realtime");
+    ready = true;
+  });
+
+  oa.on("message", (data) => {
     try {
-      // Создаём realtime-сессию OpenAI
-      session = await createRealtimeSession();
-      const clientSecret =
-        session?.client_secret?.value || session?.client_secret;
-
-      const oa = new WebSocket(
-        `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(
-          clientSecret
-        )}`,
-        {
-          headers: {
-            Authorization: `Bearer ${clientSecret}`,
-            "OpenAI-Beta": "realtime=v1",
-          },
-        }
-      );
-
-      oa.on("open", () => console.log("🔗 Connected to OpenAI Realtime"));
-      oa.on("message", (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === "session.created")
-            console.log("🟢 OpenAI session ready");
-          else if (msg.type === "error")
-            console.error("❌ OpenAI Error:", msg.error);
-        } catch (err) {
-          console.error("⚠️ JSON parse error:", err.message);
-        }
-      });
-
-      // === Приём данных от ESP ===
-      esp.on("message", async (msg) => {
-        if (Buffer.isBuffer(msg)) {
-          if (rawStream) {
-            rawStream.write(msg);
-            totalBytes += msg.length;
-          }
-          return;
-        }
-
-        const text = msg.toString().trim();
-
-        if (text.includes("STREAM STARTED")) {
-          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-          rawFilePath = path.join(
-            recordingsDir,
-            `session_${timestamp}.raw`
-          );
-          rawStream = fs.createWriteStream(rawFilePath);
-          totalBytes = 0;
-          console.log(`🎙 Recording raw audio to: ${rawFilePath}`);
-        }
-
-        if (text.includes("STREAM STOPPED")) {
-          if (rawStream) {
-            rawStream.end(() => {
-              console.log(
-                `💾 Recording closed (${(totalBytes / 1024).toFixed(1)} KB)`
-              );
-            });
-            rawStream = null;
-
-            // После остановки можно (необязательно) сделать запрос на транскрипцию
-            if (fs.existsSync(rawFilePath)) {
-              console.log("🧠 Sending for transcription...");
-              try {
-                const audioData = fs.readFileSync(rawFilePath);
-                const base64 = audioData.toString("base64");
-
-                oa.send(
-                  JSON.stringify({
-                    type: "input_audio_buffer.append",
-                    audio: base64,
-                  })
-                );
-                oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-                oa.send(
-                  JSON.stringify({
-                    type: "response.create",
-                    response: {
-                      modalities: ["text"],
-                      instructions:
-                        "Transcribe and briefly summarize the recorded audio.",
-                    },
-                  })
-                );
-
-                console.log("📨 Sent for OpenAI transcription");
-              } catch (err) {
-                console.error("❌ Transcription send error:", err.message);
-              }
-            }
-          }
-        }
-      });
-
-      esp.on("close", () => {
-        console.log("🔌 ESP disconnected");
-        if (rawStream) rawStream.end();
-        oa.close();
-      });
+      const parsed = JSON.parse(data.toString());
+      if (parsed.type === "error") console.error("❌ OpenAI Error:", parsed.error);
+      if (parsed.type.startsWith("response.")) esp.send(data.toString());
     } catch (err) {
-      console.error("❌ Setup error:", err.message);
-      if (esp.readyState === WebSocket.OPEN) esp.close();
+      console.error("⚠️ Parse error:", err.message);
     }
   });
-}
 
-start().catch(console.error);
+  esp.on("message", async (msg) => {
+    if (Buffer.isBuffer(msg)) {
+      if (!ready) return;
+      audioBuffer.push(msg);
+      if (audioBuffer.length >= FLUSH_THRESHOLD) {
+        flushAudioBuffer();
+      } else {
+        clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushAudioBuffer, FLUSH_INTERVAL);
+      }
+      return;
+    }
+
+    const text = msg.toString().trim().toUpperCase();
+    console.log(`📝 ESP: ${text}`);
+
+    if (text.includes("STREAM STARTED")) {
+      const filename = `session_${new Date().toISOString().replace(/[:.]/g, "-")}.raw`;
+      const filepath = path.join(RECORD_DIR, filename);
+      currentFile = filepath;
+      writeStream = fs.createWriteStream(filepath);
+      console.log(`🎙 Recording raw audio to: ${filepath}`);
+    }
+
+    if (text.includes("STREAM STOPPED")) {
+      console.log("🛑 Stream stopped");
+      flushAudioBuffer();
+
+      if (writeStream) {
+        writeStream.end();
+        console.log(`💾 Recording saved: ${currentFile}`);
+        lastWavFile = currentFile;
+      }
+
+      oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+      oa.send(JSON.stringify({
+        type: "response.create",
+        response: { modalities: ["text"], instructions: "Transcribe this audio." },
+      }));
+      console.log("📨 Sent commit + response.create");
+    }
+  });
+
+  esp.on("close", () => {
+    console.log("🔌 ESP disconnected");
+    oa.close();
+    if (writeStream) writeStream.end();
+  });
+});
+
+console.log(`🚀 Proxy ready at ws://0.0.0.0:${PORT}/ws`);
