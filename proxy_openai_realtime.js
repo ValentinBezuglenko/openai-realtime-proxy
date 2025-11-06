@@ -35,47 +35,20 @@ async function start() {
       // --- состояние ---
       let ready = false;
       let audioBuffer = [];
-      let flushTimer = null;
+      const MAX_CHUNK_SIZE = 32768; // 32 KB
 
-      const SAMPLE_RATE = 24000;
-      const BYTES_PER_SAMPLE = 2;
-      const MIN_SEC = 2;
-      const MIN_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SEC;
-      const CHUNK_SIZE = 32 * 1024; // 32 KB
-
-      // --- flush аудио ---
       function flushAudioBuffer(force = false) {
         if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN) return;
 
-        const full = Buffer.concat(audioBuffer);
-
-        if (!force && full.length < MIN_BYTES) {
-          console.log(`⏳ Buffer too small (${full.length} bytes), waiting for 2s of audio`);
-          return;
+        let buffer = Buffer.concat(audioBuffer);
+        while (buffer.length > 0) {
+          const sendSize = Math.min(MAX_CHUNK_SIZE, buffer.length);
+          const chunk = buffer.slice(0, sendSize);
+          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
+          console.log(`📤 Sent chunk: ${sendSize} bytes`);
+          buffer = buffer.slice(sendSize);
         }
-
-        for (let offset = 0; offset < full.length; offset += CHUNK_SIZE) {
-          const end = Math.min(offset + CHUNK_SIZE, full.length);
-          const chunk = full.slice(offset, end);
-          const base64 = chunk.toString("base64");
-          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
-          console.log(`📤 Sent chunk: ${chunk.length} bytes`);
-        }
-
         audioBuffer = [];
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-
-      // --- commit + response.create ---
-      function commitAudio() {
-        if (oa.readyState !== WebSocket.OPEN) return;
-        oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-        oa.send(JSON.stringify({
-          type: "response.create",
-          response: { modalities: ["text"], instructions: "Return only transcription" }
-        }));
-        console.log("📨 Commit + response.create sent");
       }
 
       // --- события OpenAI ---
@@ -97,27 +70,31 @@ async function start() {
       oa.on("close", () => console.log("🔌 OpenAI closed"));
       oa.on("error", (e) => console.error("❌ OpenAI WS Error:", e.message));
 
-      // --- данные от ESP ---
+      // --- получение данных от ESP ---
       esp.on("message", (msg) => {
         if (!ready) return;
 
         if (Buffer.isBuffer(msg)) {
           audioBuffer.push(msg);
-
-          clearTimeout(flushTimer);
-          flushTimer = setTimeout(() => flushAudioBuffer(), 2000);
+          if (Buffer.concat(audioBuffer).length >= MAX_CHUNK_SIZE) flushAudioBuffer();
           return;
         }
 
         const text = msg.toString().trim();
         if (text.includes("STREAM_STOPPED")) {
           flushAudioBuffer(true);
-          commitAudio();
+          if (oa.readyState === WebSocket.OPEN) {
+            oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            oa.send(JSON.stringify({
+              type: "response.create",
+              response: { modalities: ["text"], instructions: "Return only transcription" }
+            }));
+            console.log("📨 Commit + response.create sent");
+          }
         }
 
         if (text.includes("STREAM_STARTED")) {
           audioBuffer = [];
-          flushTimer = null;
           console.log("🎙 Stream started");
         }
       });
@@ -126,7 +103,14 @@ async function start() {
       esp.on("close", () => {
         console.log("🔌 ESP disconnected, flushing remaining buffer");
         flushAudioBuffer(true);
-        commitAudio();
+        if (oa.readyState === WebSocket.OPEN) {
+          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          oa.send(JSON.stringify({
+            type: "response.create",
+            response: { modalities: ["text"], instructions: "Return only transcription" }
+          }));
+          console.log("📨 Commit + response.create sent after ESP disconnect");
+        }
         oa.close();
       });
 
