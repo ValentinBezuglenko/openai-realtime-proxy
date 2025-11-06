@@ -127,6 +127,7 @@ async function start() {
 
       oa.on("open", () => {
         console.log("✅ Connected to OpenAI Realtime");
+        openAIConnected = true; // Устанавливаем флаг подключения
         // Сессия уже инициализирована через API, дополнительных действий не требуется
       });
 
@@ -154,6 +155,7 @@ async function start() {
       oa.on("close", (code, reason) => {
         console.log("🔌 OpenAI WebSocket closed");
         console.log("Close code:", code, "Reason:", reason.toString());
+        openAIConnected = false; // Сбрасываем флаг подключения
         if (autoCommitInterval) clearInterval(autoCommitInterval);
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
@@ -167,7 +169,7 @@ async function start() {
       // Автоматически отправляем commit если нет активности более 3 секунд
       // Но только если было отправлено хотя бы немного аудио данных
       const autoCommitInterval = setInterval(() => {
-        if (oa.readyState === WebSocket.OPEN && esp.readyState === WebSocket.OPEN) {
+        if (oa.readyState === WebSocket.OPEN && openAIConnected && esp.readyState === WebSocket.OPEN) {
           const timeSinceLastAudio = Date.now() - lastAudioTime;
           // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
           if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
