@@ -194,17 +194,21 @@ async function start() {
           
           // Если получен сигнал остановки, отправляем commit и response.create
           if (textMsg.includes("STREAM STOPPED") || textMsg.includes("STOP")) {
+            console.log(`🛑 Received stop signal. OpenAI ready: ${oa.readyState === WebSocket.OPEN}, connected: ${openAIConnected}, chunks sent: ${audioChunksSent}`);
             if (oa.readyState === WebSocket.OPEN && openAIConnected) {
               // Проверяем, что есть аудио данные перед commit
               if (audioChunksSent > 0) {
                 console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
+                console.log(`⏳ Waiting 500ms before commit...`);
                 // Увеличиваем задержку перед commit, чтобы убедиться, что все последние аудио чанки доставлены
                 setTimeout(() => {
+                  console.log(`📤 Sending input_audio_buffer.commit...`);
                   oa.send(JSON.stringify({
                     type: "input_audio_buffer.commit"
                   }));
                   
                   setTimeout(() => {
+                    console.log(`📤 Sending response.create...`);
                     oa.send(JSON.stringify({
                       type: "response.create",
                       response: {
@@ -217,7 +221,7 @@ async function start() {
                 console.log("⚠️  No audio data to commit");
               }
             } else {
-              console.log("⚠️  Stop signal received but OpenAI not ready to commit");
+              console.log(`⚠️  Stop signal received but OpenAI not ready to commit (readyState: ${oa.readyState}, connected: ${openAIConnected})`);
             }
           }
         }
