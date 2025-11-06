@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 10000;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
-// Создаём realtime-сессию OpenAI
+// Создаём Realtime-сессию OpenAI
 async function createRealtimeSession() {
   try {
     const res = await axios.post(
@@ -29,7 +29,6 @@ async function start() {
     console.log("✅ ESP connected");
     esp.send(JSON.stringify({ type: "connection.ack" }));
 
-    // Создаём OpenAI Realtime session
     console.log("🔧 Creating OpenAI Realtime session...");
     const session = await createRealtimeSession();
     const token = session.client_secret?.value || session.client_secret;
@@ -66,7 +65,7 @@ async function start() {
     oa.on("error", (e) => console.error("❌ OpenAI WS error:", e.message));
     oa.on("close", () => console.log("🔌 OpenAI WebSocket closed"));
 
-    // Приём данных от ESP32
+    // Получаем аудио и команды от ESP32
     esp.on("message", (msg) => {
       if (Buffer.isBuffer(msg)) {
         if (oa.readyState === WebSocket.OPEN && openAIConnected) {
@@ -84,14 +83,12 @@ async function start() {
         const text = msg.toString().trim();
         console.log(`📝 Text from ESP: [${text}]`);
 
-        if (/STOP/i.test(text)) {  // реагируем на STOP или STREAM STOPPED
+        if (/STOP/i.test(text)) {
           console.log("\n🛑 STOP signal received");
-
           if (oa.readyState === WebSocket.OPEN && openAIConnected) {
             if (audioChunksSent > 0) {
               console.log(`📤 Committing ${audioChunksSent} chunks`);
               oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-
               setTimeout(() => {
                 if (oa.readyState === WebSocket.OPEN) {
                   console.log("📤 Creating response...");
@@ -100,7 +97,7 @@ async function start() {
                     response: { modalities: ["text"] }
                   }));
                 }
-              }, 300);
+              }, 500); // 500ms задержка перед response.create
             } else {
               console.log("⚠️ No audio sent yet");
             }
