@@ -1,0 +1,15 @@
+# Commit Message Style Guide
+
+## Language
+- All commit messages must be written in **English**
+
+## Format
+- Use clear, descriptive messages
+- Use present tense: "Add feature" not "Added feature"
+- Use imperative mood: "Fix bug" not "Fixes bug"
+
+## Examples
+- ✅ `Add audio buffering functionality`
+- ✅ `Fix: Handle empty audio buffer error`
+- ✅ `Update: Refactor code structure`
+
