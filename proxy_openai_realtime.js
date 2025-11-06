@@ -171,7 +171,7 @@ async function start() {
                 response: {
                   modalities: ["text"],
                   instructions:
-                    "Transcribe the spoken audio and return recognized text only.",
+                    "Return only the raw transcription of the spoken audio.",
                 },
               })
             );
