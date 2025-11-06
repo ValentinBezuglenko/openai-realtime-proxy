@@ -1,4 +1,4 @@
-// server-working.js
+// server-fixed-chunks.js
 // npm install ws axios
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 8765;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
-// создаём Realtime сессию
 async function createRealtimeSession() {
   const res = await axios.post(
     "https://api.openai.com/v1/realtime/sessions",
@@ -22,9 +21,9 @@ async function start() {
   console.log(`🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
 
   wss.on("connection", async (esp) => {
-    console.log("✅ ESP connected:", esp._socket && esp._socket.remoteAddress);
+    console.log("✅ ESP connected:", esp._socket?.remoteAddress);
 
-    // создаём сессию
+    // создаём сессию OpenAI
     let session;
     try {
       console.log("🔧 Creating OpenAI session...");
@@ -37,69 +36,73 @@ async function start() {
       return;
     }
 
-    const clientSecret = session.client_secret?.value || session.client_secret || "";
-    const wsUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(session.model)}&client_secret=${encodeURIComponent(clientSecret)}`;
-    const oa = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" } });
+    const clientSecret = session.client_secret?.value || session.client_secret;
+    const wsUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(session.model)}&client_secret=${encodeURIComponent(clientSecret || "")}`;
+
+    const oa = new WebSocket(wsUrl, {
+      headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" }
+    });
 
     let openAIConnected = false;
-    let audioBuffer = [];
+    let audioBuffer = []; // накопленные бинарные чанки
 
-    // когда OpenAI WS открылся
     oa.on("open", () => {
       openAIConnected = true;
       console.log("✅ Connected to OpenAI Realtime WS");
+
+      // Отправляем ACK ESP только когда OpenAI готов
       if (esp.readyState === WebSocket.OPEN) {
         esp.send(JSON.stringify({ type: "connection.ack", event: "connected" }));
         console.log("📣 Sent connection.ack to ESP");
       }
     });
 
-    // пересылаем всё от OpenAI обратно на ESP
     oa.on("message", (data) => {
       const msg = data.toString();
+      // пересылаем все события OpenAI обратно на ESP
       if (esp.readyState === WebSocket.OPEN) esp.send(msg);
 
       try {
         const p = JSON.parse(msg);
         if (p.type === "error") console.error("OpenAI ERROR:", p.error);
+        if (p.type === "response.text.done") console.log("🎯 TRANSCRIPTION:", p.text);
       } catch {}
     });
 
-    oa.on("error", (err) => console.error("❌ OpenAI WS error:", err && err.message));
-    oa.on("close", (code, reason) => { openAIConnected = false; console.log("🔌 OpenAI WS closed", code, reason && reason.toString()); });
+    oa.on("error", (err) => console.error("❌ OpenAI WS error:", err?.message));
+    oa.on("close", (code, reason) => { openAIConnected = false; console.log("🔌 OpenAI WS closed", code, reason?.toString()); });
 
-    // обработка сообщений от ESP
+    // Обработка сообщений от ESP
     esp.on("message", (msg, isBinary) => {
       if (!openAIConnected) {
-        if (isBinary) console.log("⚠️ OpenAI not ready yet — binary chunk skipped");
-        else console.log("⚠️ OpenAI not ready yet — text skipped:", msg.toString().trim());
+        if (isBinary) console.log("⚠️ OpenAI not ready — binary chunk skipped");
+        else console.log("⚠️ OpenAI not ready — text skipped:", msg.toString().trim());
         return;
       }
 
       if (isBinary) {
         audioBuffer.push(msg);
-        try {
-          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.toString("base64") }));
-        } catch (e) {
-          console.error("❌ Failed to forward binary to OpenAI:", e.message || e);
+        // Отправляем каждый чан к OpenAI
+        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.toString("base64") }));
+
+        // commit когда накопилось ≥3 чанка (~100ms при 16kHz, 16bit, 1ch)
+        if (audioBuffer.length >= 3) {
+          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          console.log(`📌 Committed ${audioBuffer.length} chunks (~100ms) to OpenAI`);
+          audioBuffer = [];
         }
 
-        // накопление ~100ms аудио: BUFFER_SIZE = 1024 байт, 16-bit, 16kHz → 32ms / чанк
-        let totalBytes = audioBuffer.reduce((a, b) => a + b.length, 0);
-        if (totalBytes >= 3200) {
-          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          audioBuffer = [];
-          console.log("📌 Committed ~100ms audio to OpenAI");
-        }
       } else {
         const text = msg.toString().trim();
         console.log("📝 Text from ESP:", text);
+
         if (/STOP|STREAM STOPPED/i.test(text)) {
           if (audioBuffer.length > 0) {
             oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            audioBuffer = [];
             console.log("🛑 Committed remaining audio on STOP");
+            audioBuffer = [];
           }
+          // создаём response для OpenAI
           oa.send(JSON.stringify({ type: "response.create", response: { modalities: ["text"] } }));
         }
       }
@@ -107,7 +110,7 @@ async function start() {
 
     esp.on("close", () => {
       console.log("🔌 ESP disconnected");
-      if (oa && oa.readyState === WebSocket.OPEN) oa.close();
+      if (oa?.readyState === WebSocket.OPEN) oa.close();
     });
   });
 
