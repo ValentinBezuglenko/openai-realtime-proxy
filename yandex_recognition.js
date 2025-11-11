@@ -38,7 +38,6 @@ wss.on("connection", ws => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
           } else {
-            // Проверяем размер файла
             if (fs.existsSync(oggPath)) {
               const stats = fs.statSync(oggPath);
               if (stats.size > 0) {
@@ -84,15 +83,26 @@ app.get("/download/:filename", (req, res) => {
   }
 
   const stats = fs.statSync(filePath);
-  console.log(`📦 Sending file ${filename}, size: ${stats.size} bytes`);
-
   if (stats.size === 0) {
     return res.status(500).send("File is empty, conversion might have failed");
   }
 
-  res.download(filePath, err => {
-    if (err) console.error("❌ Download error:", err);
-    else console.log(`✅ File sent: ${filename}`);
+  console.log(`📦 Sending file ${filename}, size: ${stats.size} bytes`);
+
+  // Явно выставляем заголовки, чтобы браузер скачивал файл
+  res.setHeader("Content-Type", "audio/ogg");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  const readStream = fs.createReadStream(filePath);
+  readStream.pipe(res);
+
+  readStream.on("error", err => {
+    console.error("❌ Read stream error:", err);
+    res.status(500).end("Server error while reading file");
+  });
+
+  readStream.on("end", () => {
+    console.log(`✅ File sent: ${filename}`);
   });
 });
 
