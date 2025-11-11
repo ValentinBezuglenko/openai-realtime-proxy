@@ -4,8 +4,8 @@ import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
 
-const PORT = process.env.PORT || 8080;
-const HTTP_PORT = process.env.HTTP_PORT || 8081; // для Express
+const PORT = process.env.PORT || 8080;       // WebSocket
+const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
 const app = express();
 
 // ==========================
@@ -20,12 +20,13 @@ wss.on("connection", ws => {
   const oggFilename = `stream_${timestamp}.ogg`;
   const pcmPath = path.join(process.cwd(), pcmFilename);
   const oggPath = path.join(process.cwd(), oggFilename);
+
   const file = fs.createWriteStream(pcmPath);
   let totalBytes = 0;
 
   console.log("🎙 Client connected");
 
-  ws.on("message", async data => {
+  ws.on("message", data => {
     if (data.toString() === "/end") {
       file.end();
       console.log(`⏹ Stream ended: ${pcmFilename} (total bytes: ${totalBytes})`);
@@ -36,11 +37,16 @@ wss.on("connection", ws => {
         (err, stdout, stderr) => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
+            ws.send(JSON.stringify({ error: "Failed to convert to OGG" }));
           } else {
             console.log(`✅ Converted to OGG: ${oggFilename}`);
+            const downloadUrl = `http://localhost:${HTTP_PORT}/download/${oggFilename}`;
+            // Отправляем ссылку на скачивание клиенту
+            ws.send(JSON.stringify({ ogg: downloadUrl }));
           }
         }
       );
+
       return;
     }
 
