@@ -12,27 +12,21 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// ===== Потоковые данные =====
-let currentFileStream = null;
-let currentFileName = "";
-let totalBytes = 0;
-
 // ==========================
-// Получение чанка (авто-старт потока)
+// 📡 Потоковый приём PCM от ESP32 через chunked POST
 // ==========================
-app.post("/chunk", (req, res) => {
-  if (!currentFileStream) {
-    const timestamp = Date.now();
-    currentFileName = `stream_${timestamp}.pcm`;
-    currentFileStream = fs.createWriteStream(currentFileName);
-    totalBytes = 0;
-    console.log("🎙️ Auto stream started:", currentFileName);
-  }
+app.post("/stream", (req, res) => {
+  const timestamp = Date.now();
+  const pcmPath = `stream_${timestamp}.pcm`;
+  const oggPath = `stream_${timestamp}.ogg`;
 
-  let chunkBytes = 0;
+  console.log(`🎙️ New stream started: ${pcmPath}`);
+
+  const fileStream = fs.createWriteStream(pcmPath);
+  let totalBytes = 0;
+
   req.on("data", chunk => {
-    currentFileStream.write(chunk);
-    chunkBytes += chunk.length;
+    fileStream.write(chunk);
     totalBytes += chunk.length;
 
     if (totalBytes % 8192 < chunk.length) {
@@ -40,79 +34,65 @@ app.post("/chunk", (req, res) => {
     }
   });
 
-  req.on("end", () => {
-    res.sendStatus(200);
-  });
+  req.on("end", async () => {
+    fileStream.end();
+    console.log(`⏹ Stream ended: ${pcmPath} (total bytes: ${totalBytes})`);
 
-  req.on("error", err => {
-    console.error("❌ Chunk stream error:", err);
-    res.status(500).send(err.message);
-  });
-});
+    if (totalBytes === 0) {
+      return res.status(400).send("❌ No data received");
+    }
 
-// ==========================
-// Конец потока
-// ==========================
-app.post("/end", (req, res) => {
-  if (!currentFileStream) {
-    console.log("⚠️ /end received, but no active stream.");
-    return res.status(400).send("No active stream");
-  }
+    try {
+      // Конвертация PCM → OGG с усилением громкости
+      await new Promise((resolve, reject) => {
+        exec(
+          `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
+          (err, stdout, stderr) => {
+            if (err) {
+              console.error("❌ ffmpeg error:", stderr);
+              reject(err);
+            } else {
+              console.log("✅ Converted to OGG:", oggPath);
+              resolve();
+            }
+          }
+        );
+      });
 
-  // Закрываем PCM файл
-  currentFileStream.end();
-  console.log(`⏹ Stream ended. Total bytes: ${totalBytes}`);
-
-  const pcmPath = currentFileName;
-  const oggPath = pcmPath.replace(".pcm", ".ogg");
-
-  // Сбрасываем поток, чтобы новый /chunk создал новый поток
-  currentFileStream = null;
-  currentFileName = "";
-  const finalTotalBytes = totalBytes;
-  totalBytes = 0;
-
-  // Конвертация PCM → OGG
-  exec(
-    `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
-    (err, stdout, stderr) => {
-      if (err) {
-        console.error("❌ ffmpeg error:", stderr);
-        return res.status(500).send("FFMPEG error");
-      }
-
-      console.log("✅ Converted to OGG:", oggPath);
-
+      // Отправка в Yandex STT
       const oggData = fs.readFileSync(oggPath);
       console.log(`📤 Sending ${oggData.length} bytes to Yandex...`);
 
-      fetch(STT_URL, {
+      const response = await fetch(STT_URL, {
         method: "POST",
         headers: {
           "Authorization": AUTH_HEADER,
           "Content-Type": "audio/ogg; codecs=opus",
         },
         body: oggData,
-      })
-        .then(r => r.text())
-        .then(text => {
-          console.log("🗣️ Yandex response:", text);
-          res.send({
-            message: "Stream processed successfully",
-            totalBytes: finalTotalBytes,
-            sttText: text,
-          });
-        })
-        .catch(err => {
-          console.error("🔥 STT error:", err);
-          res.status(500).send(err.message);
-        });
+      });
+
+      const text = await response.text();
+      console.log("🗣️ Yandex response:", text);
+      res.send({
+        message: "Stream processed successfully",
+        totalBytes,
+        sttText: text,
+      });
+    } catch (err) {
+      console.error("🔥 STT error:", err);
+      res.status(500).send(err.message);
     }
-  );
+  });
+
+  req.on("error", err => {
+    console.error("❌ Stream error:", err);
+    fileStream.destroy(err);
+  });
 });
 
 // ==========================
-// Список файлов
+// Список файлов и скачивание
 // ==========================
 app.get("/list", (req, res) => {
   const files = fs.readdirSync("./").filter(f => f.startsWith("stream_"));
@@ -125,6 +105,5 @@ app.get("/files/:filename", (req, res) => {
   res.download(filename);
 });
 
-// ==========================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
