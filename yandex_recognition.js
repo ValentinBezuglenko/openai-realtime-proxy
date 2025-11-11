@@ -82,7 +82,7 @@ app.get("/player/:filename", (req, res) => {
   `);
 });
 
-// 🎵 Отдача файлов
+//  Отдача файлов
 app.use("/file", express.static(OGG_DIR));
 
 server.listen(PORT, () => {
