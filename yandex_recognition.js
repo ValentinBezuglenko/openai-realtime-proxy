@@ -37,12 +37,11 @@ wss.on("connection", ws => {
         (err, stdout, stderr) => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
-            ws.send(JSON.stringify({ error: "Failed to convert to OGG" }));
           } else {
             console.log(`✅ Converted to OGG: ${oggFilename}`);
             const downloadUrl = `http://localhost:${HTTP_PORT}/download/${oggFilename}`;
-            // Отправляем ссылку на скачивание клиенту
-            ws.send(JSON.stringify({ ogg: downloadUrl }));
+            // Только выводим ссылку в консоль
+            console.log(`🔗 OGG available at: ${downloadUrl}`);
           }
         }
       );
