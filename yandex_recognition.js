@@ -21,12 +21,16 @@ let totalBytes = 0;
 app.use(express.raw({ type: "application/octet-stream", limit: "20mb" }));
 
 // ==========================
-// Приём чанка
+// Получение чанка (авто-старт потока)
 // ==========================
 app.post("/chunk", (req, res) => {
   if (!currentFileStream) {
-    console.log("⚠️ Received chunk, but no active stream. Ignoring.");
-    return res.sendStatus(400);
+    // Автоматический старт нового потока
+    const timestamp = Date.now();
+    currentFileName = `stream_${timestamp}.pcm`;
+    currentFileStream = fs.createWriteStream(currentFileName);
+    totalBytes = 0;
+    console.log("🎙️ Auto stream started:", currentFileName);
   }
 
   const chunk = req.body;
@@ -57,7 +61,7 @@ app.post("/end", async (req, res) => {
   const pcmPath = currentFileName;
   const oggPath = pcmPath.replace(".pcm", ".ogg");
 
-  // Сбрасываем поток сразу, чтобы новые чанки не писались
+  // Сбрасываем поток, чтобы новый /chunk создал новый поток
   currentFileStream = null;
   currentFileName = "";
   const finalTotalBytes = totalBytes;
@@ -108,30 +112,14 @@ app.post("/end", async (req, res) => {
 });
 
 // ==========================
-// Начало нового потока (создаём PCM файл)
-// ==========================
-app.post("/start", (req, res) => {
-  if (currentFileStream) {
-    console.log("⚠️ Stream already in progress.");
-    return res.status(400).send("Stream already in progress");
-  }
-
-  const timestamp = Date.now();
-  currentFileName = `stream_${timestamp}.pcm`;
-  currentFileStream = fs.createWriteStream(currentFileName);
-  totalBytes = 0;
-
-  console.log("🎙️ New stream started:", currentFileName);
-  res.send({ message: "Stream started", file: currentFileName });
-});
-
-// ==========================
 // Список файлов
 // ==========================
 app.get("/list", (req, res) => {
   const files = fs.readdirSync("./").filter(f => f.startsWith("stream_"));
   res.json(files);
 });
+
+
 
 app.get("/files/:filename", (req, res) => {
   const filename = req.params.filename;
