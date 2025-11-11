@@ -21,25 +21,11 @@ app.post("/stream", async (req, res) => {
 
   console.log("🎙️ Incoming audio stream...");
 
-  let receivedBytes = 0;
   const fileStream = fs.createWriteStream(pcmPath);
-
-  req.on("data", chunk => {
-    receivedBytes += chunk.length;
-    fileStream.write(chunk);
-    if (receivedBytes >= 8192 && receivedBytes % 8192 < chunk.length) {
-      console.log(`⬇️  Received ${receivedBytes} bytes`);
-    }
-  });
+  req.pipe(fileStream);
 
   req.on("end", async () => {
-    fileStream.end();
-    console.log(`✅ Audio saved: ${pcmPath} (${receivedBytes} bytes)`);
-
-    if (receivedBytes === 0) {
-      res.status(400).send("❌ No data received");
-      return;
-    }
+    console.log("✅ Audio saved:", pcmPath);
 
     try {
       // Конвертация PCM → OGG с усилением громкости
@@ -58,9 +44,8 @@ app.post("/stream", async (req, res) => {
         );
       });
 
+      // Отправка в Yandex STT
       const oggData = fs.readFileSync(oggPath);
-      console.log(`📤 Sending ${oggData.length} bytes to Yandex...`);
-
       const response = await fetch(STT_URL, {
         method: "POST",
         headers: {
@@ -77,11 +62,6 @@ app.post("/stream", async (req, res) => {
       console.error("🔥 STT error:", err);
       res.status(500).send(err.message);
     }
-  });
-
-  req.on("error", err => {
-    console.error("❌ Stream error:", err);
-    fileStream.destroy(err);
   });
 });
 
