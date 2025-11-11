@@ -5,35 +5,21 @@ import path from "path";
 import { exec } from "child_process";
 import { fileURLToPath } from "url";
 
-// ---------------------------
-// ES-модуль: получаем __dirname
-// ---------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---------------------------
-// Параметры сервера
-// ---------------------------
-const PORT = process.env.PORT || 8080;       // WebSocket
-const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
+// 🗂 Папка для файлов
+const OGG_DIR = path.join(__dirname, "public/ogg");
+if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
+
+// 🌐 Один порт (Render требует один сервер)
+const PORT = process.env.PORT || 8080;
 const app = express();
 
-// ---------------------------
-// Папка для OGG файлов
-// ---------------------------
-const OGG_DIR = path.join(__dirname, "public/ogg");
-
-// Создаём папку заранее, если её нет
-if (!fs.existsSync(OGG_DIR)) {
-  fs.mkdirSync(OGG_DIR, { recursive: true });
-  console.log(`📁 Created folder: ${OGG_DIR}`);
-}
-
-// ==========================
-// WebSocket сервер для получения PCM
-// ==========================
-const wss = new WebSocketServer({ port: PORT });
-console.log(`🌐 WebSocket server running on port ${PORT}`);
+// 📡 Вебсокет поверх того же HTTP сервера
+import http from "http";
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
 wss.on("connection", ws => {
   const timestamp = Date.now();
@@ -50,76 +36,55 @@ wss.on("connection", ws => {
   ws.on("message", data => {
     if (data.toString() === "/end") {
       file.end();
-      console.log(`⏹ Stream ended: ${pcmFilename} (total bytes: ${totalBytes})`);
+      console.log(`⏹ Stream ended: ${pcmFilename} (total: ${totalBytes})`);
 
-      // Конвертация PCM → OGG
       exec(
-        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i ${pcmPath} -c:a libopus ${oggPath}`,
-        (err, stdout, stderr) => {
-          if (err) {
-            console.error("❌ ffmpeg error:", stderr);
-            return;
-          }
-
-          if (!fs.existsSync(oggPath) || fs.statSync(oggPath).size === 0) {
-            console.error(`❌ OGG file not created or empty: ${oggFilename}`);
-            return;
-          }
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -c:a libopus "${oggPath}"`,
+        err => {
+          if (err) return console.error("❌ ffmpeg error");
+          if (!fs.existsSync(oggPath)) return console.error("❌ No OGG created");
 
           console.log(`✅ Converted to OGG: ${oggFilename}`);
-          console.log(`🌐 Web player available at: http://localhost:${HTTP_PORT}/player/${oggFilename}`);
+          console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME}/player/${oggFilename}`);
         }
       );
-
       return;
     }
 
     if (data instanceof Buffer) {
       file.write(data);
       totalBytes += data.length;
-      console.log(`⬇️ Chunk received: ${data.length} bytes (total: ${totalBytes})`);
     }
   });
 
-  ws.on("close", () => {
-    file.end();
-    console.log("❌ Client disconnected");
-  });
-
-  ws.on("error", err => console.error("❌ WebSocket error:", err));
+  ws.on("close", () => file.end());
 });
 
-// ==========================
-// Express веб-морда и отдача файлов
-// ==========================
-
-// Страница с аудио-плеером
+// 🎧 Страница-плеер
 app.get("/player/:filename", (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(OGG_DIR, filename);
-
   if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
 
   res.send(`
     <!doctype html>
     <html>
-      <head><title>Audio Player</title></head>
+      <head><title>${filename}</title></head>
       <body>
-        <h1>Прослушать OGG</h1>
-        <audio controls>
+        <h1>${filename}</h1>
+        <audio controls autoplay>
           <source src="/file/${filename}" type="audio/ogg">
-          Ваш браузер не поддерживает OGG.
         </audio>
         <br>
-        <a href="/file/${filename}" download>Скачать OGG</a>
+        <a href="/file/${filename}" download>Скачать</a>
       </body>
     </html>
   `);
 });
 
-// Маршрут для отдачи файлов
+// 🎵 Отдача файлов
 app.use("/file", express.static(OGG_DIR));
 
-app.listen(HTTP_PORT, () => {
-  console.log(`🌐 HTTP server running on port ${HTTP_PORT}`);
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
