@@ -3,12 +3,24 @@ import { WebSocketServer } from "ws";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+import { fileURLToPath } from "url";
 
+// ---------------------------
+// ES-модуль: получаем __dirname
+// ---------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ---------------------------
+// Параметры сервера
+// ---------------------------
 const PORT = process.env.PORT || 8080;       // WebSocket
 const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
 const app = express();
 
-// Папка для OGG файлов в структуре репозитория
+// ---------------------------
+// Папка для OGG файлов
+// ---------------------------
 const OGG_DIR = path.join(__dirname, "public/ogg");
 
 // Создаём папку заранее, если её нет
