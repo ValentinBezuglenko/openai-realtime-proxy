@@ -1,9 +1,12 @@
-import net from "net";
+import WebSocket, { WebSocketServer } from "ws";
 import fs from "fs";
 
-const PORT = 5000;
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocketServer({ port: PORT });
 
-const server = net.createServer(socket => {
+console.log(`🌐 WebSocket server running on port ${PORT}`);
+
+wss.on("connection", ws => {
   const timestamp = Date.now();
   const filename = `stream_${timestamp}.pcm`;
   const file = fs.createWriteStream(filename);
@@ -11,22 +14,26 @@ const server = net.createServer(socket => {
 
   console.log("🎙 Client connected");
 
-  socket.on("data", chunk => {
-    file.write(chunk);
-    totalBytes += chunk.length;
-    console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
+  ws.on("message", data => {
+    if (data.toString() === "/end") {
+      file.end();
+      console.log(`⏹ Stream ended: ${filename} (total bytes: ${totalBytes})`);
+      return;
+    }
+
+    if (data instanceof Buffer) {
+      file.write(data);
+      totalBytes += data.length;
+      console.log(`⬇️ Chunk received: ${data.length} bytes (total: ${totalBytes})`);
+    }
   });
 
-  socket.on("end", () => {
+  ws.on("close", () => {
     file.end();
-    console.log(`⏹ Stream ended: ${filename} (total bytes: ${totalBytes})`);
+    console.log("❌ Client disconnected");
   });
 
-  socket.on("error", err => {
-    console.error("❌ Socket error:", err);
+  ws.on("error", err => {
+    console.error("❌ WebSocket error:", err);
   });
-});
-
-server.listen(PORT, () => {
-  console.log(`🌐 TCP Server running on port ${PORT}`);
 });
