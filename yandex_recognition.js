@@ -5,32 +5,28 @@ import fs from "fs";
 
 const app = express();
 
+// ===== Yandex STT =====
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// ==========================
-// Текущий поток
-// ==========================
+// ===== Потоковые данные =====
 let currentFileStream = null;
 let currentFileName = "";
 let totalBytes = 0;
 
-// Ограничение размера чанка для express.raw
-app.use(express.raw({ type: "application/octet-stream", limit: "10mb" }));
+// Ограничение размера для express.raw
+app.use(express.raw({ type: "application/octet-stream", limit: "20mb" }));
 
 // ==========================
-// Получение чанка
+// Приём чанка
 // ==========================
 app.post("/chunk", (req, res) => {
   if (!currentFileStream) {
-    const timestamp = Date.now();
-    currentFileName = `stream_${timestamp}.pcm`;
-    currentFileStream = fs.createWriteStream(currentFileName);
-    totalBytes = 0;
-    console.log("🎙️ New stream started:", currentFileName);
+    console.log("⚠️ Received chunk, but no active stream. Ignoring.");
+    return res.sendStatus(400);
   }
 
   const chunk = req.body;
@@ -46,21 +42,29 @@ app.post("/chunk", (req, res) => {
 });
 
 // ==========================
-// Сигнал конца потока
+// Конец потока
 // ==========================
 app.post("/end", async (req, res) => {
   if (!currentFileStream) {
-    return res.status(400).send("❌ No stream in progress");
+    console.log("⚠️ /end received, but no active stream.");
+    return res.status(400).send("No active stream");
   }
 
+  // Закрываем PCM файл
   currentFileStream.end();
   console.log(`⏹ Stream ended. Total bytes: ${totalBytes}`);
 
   const pcmPath = currentFileName;
-  const oggPath = currentFileName.replace(".pcm", ".ogg");
+  const oggPath = pcmPath.replace(".pcm", ".ogg");
+
+  // Сбрасываем поток сразу, чтобы новые чанки не писались
+  currentFileStream = null;
+  currentFileName = "";
+  const finalTotalBytes = totalBytes;
+  totalBytes = 0;
 
   try {
-    // Конвертация PCM → OGG
+    // Конвертация PCM → OGG с усилением
     await new Promise((resolve, reject) => {
       exec(
         `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
@@ -92,16 +96,33 @@ app.post("/end", async (req, res) => {
     const text = await response.text();
     console.log("🗣️ Yandex response:", text);
 
-    // Сброс потока
-    currentFileStream = null;
-    currentFileName = "";
-    totalBytes = 0;
-
-    res.send(text);
+    res.send({
+      message: "Stream processed successfully",
+      totalBytes: finalTotalBytes,
+      sttText: text,
+    });
   } catch (err) {
     console.error("🔥 STT error:", err);
     res.status(500).send(err.message);
   }
+});
+
+// ==========================
+// Начало нового потока (создаём PCM файл)
+// ==========================
+app.post("/start", (req, res) => {
+  if (currentFileStream) {
+    console.log("⚠️ Stream already in progress.");
+    return res.status(400).send("Stream already in progress");
+  }
+
+  const timestamp = Date.now();
+  currentFileName = `stream_${timestamp}.pcm`;
+  currentFileStream = fs.createWriteStream(currentFileName);
+  totalBytes = 0;
+
+  console.log("🎙️ New stream started:", currentFileName);
+  res.send({ message: "Stream started", file: currentFileName });
 });
 
 // ==========================
