@@ -1,21 +1,11 @@
+import WebSocket, { WebSocketServer } from "ws";
 import fs from "fs";
-import https from "https";
-import { WebSocketServer } from "ws";
 
-// ==== SSL для Render: можно использовать свои сертификаты или самоподписанные ====
-const options = {
-  key: fs.readFileSync("./privkey.pem"),
-  cert: fs.readFileSync("./fullchain.pem")
-};
+const PORT = process.env.PORT || 10000; // Render назначит порт через переменную окружения
 
-// ==== HTTPS сервер на 443 ====
-const server = https.createServer(options);
-server.listen(process.env.PORT || 443, () => {
-  console.log("🌐 HTTPS server running on port 443");
-});
-
-// ==== WebSocket сервер на пути /ws ====
-const wss = new WebSocketServer({ server, path: "/ws" });
+// Создаём простой WebSocket сервер
+const wss = new WebSocketServer({ port: PORT });
+console.log(`🌐 WebSocket server running on port ${PORT}`);
 
 wss.on("connection", ws => {
   const timestamp = Date.now();
@@ -26,9 +16,10 @@ wss.on("connection", ws => {
   console.log("🎙 Client connected");
 
   ws.on("message", data => {
-    if (typeof data === "string" && data === "/end") {
+    // ESP32 шлёт "/end" для завершения
+    if (data.toString() === "/end") {
       file.end();
-      console.log(`⏹ Stream ended: ${filename} (total: ${totalBytes} bytes)`);
+      console.log(`⏹ Stream ended: ${filename} (total bytes: ${totalBytes})`);
       return;
     }
 
@@ -44,5 +35,7 @@ wss.on("connection", ws => {
     console.log("❌ Client disconnected");
   });
 
-  ws.on("error", err => console.error("❌ WebSocket error:", err));
+  ws.on("error", err => {
+    console.error("❌ WebSocket error:", err);
+  });
 });
