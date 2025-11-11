@@ -9,7 +9,7 @@ const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
 const app = express();
 
 // ==========================
-// 📡 WebSocket сервер
+// WebSocket сервер для получения PCM
 // ==========================
 const wss = new WebSocketServer({ port: PORT });
 console.log(`🌐 WebSocket server running on port ${PORT}`);
@@ -41,22 +41,12 @@ wss.on("connection", ws => {
           }
 
           if (!fs.existsSync(oggPath) || fs.statSync(oggPath).size === 0) {
-            console.error(`❌ OGG file not created or пустой: ${oggFilename}`);
+            console.error(`❌ OGG file not created or empty: ${oggFilename}`);
             return;
           }
 
           console.log(`✅ Converted to OGG: ${oggFilename}`);
-
-          // Загрузка на 0x0.st
-          const uploadCommand = `curl --upload-file ${oggPath} https://0x0.st/`;
-          exec(uploadCommand, (err2, stdout2, stderr2) => {
-            if (err2) {
-              console.error("❌ Upload error:", stderr2);
-            } else {
-              const publicUrl = stdout2.trim();
-              console.log(`🔗 Uploaded to 0x0.st: ${publicUrl}`);
-            }
-          });
+          console.log(`🌐 Web player available at: http://localhost:${HTTP_PORT}/player/${oggFilename}`);
         }
       );
 
@@ -79,8 +69,52 @@ wss.on("connection", ws => {
 });
 
 // ==========================
-// HTTP сервер (если нужен)
+// Express веб-морда и отдача файлов
 // ==========================
+
+// Страница с аудио-плеером
+app.get("/player/:filename", (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(process.cwd(), filename);
+
+  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
+
+  res.send(`
+    <!doctype html>
+    <html>
+      <head><title>Audio Player</title></head>
+      <body>
+        <h1>Прослушать OGG</h1>
+        <audio controls>
+          <source src="/file/${filename}" type="audio/ogg">
+          Ваш браузер не поддерживает OGG.
+        </audio>
+        <br>
+        <a href="/file/${filename}" download>Скачать OGG</a>
+      </body>
+    </html>
+  `);
+});
+
+// Маршрут для отдачи файлов
+app.get("/file/:filename", (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(process.cwd(), filename);
+
+  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
+
+  res.setHeader("Content-Type", "audio/ogg");
+  res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+
+  const readStream = fs.createReadStream(filePath);
+  readStream.pipe(res);
+
+  readStream.on("error", err => {
+    console.error("❌ Read stream error:", err);
+    res.status(500).end("Server error while reading file");
+  });
+});
+
 app.listen(HTTP_PORT, () => {
   console.log(`🌐 HTTP server running on port ${HTTP_PORT}`);
 });
