@@ -37,7 +37,7 @@ const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
 // --- Ключевые слова для эмоций ---
 const emotionKeywords = {
-  greeting: ["Привет, "хай", "здарова", "ёня"],
+  greeting: ["Привет", "хай", "здарова", "ёня"],
   happy: ["ура", "супер", "здорово"],
   sad: ["грустно", "печаль"],
   angry: ["злюсь", "сердит", "дурак"],
