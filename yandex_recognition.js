@@ -19,8 +19,6 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 
 // --- Создаём сервер HTTP для Express и WS ---
 const server = createServer(app);
-
-// --- WebSocketServer на том же сервере ---
 const wss = new WebSocketServer({ server });
 console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
@@ -45,7 +43,6 @@ async function recognizeOgg(oggPath) {
     },
     body: oggData,
   });
-
   const text = await response.text();
   console.log("🗣️ Yandex STT response:", text);
   return text;
@@ -65,15 +62,18 @@ if (fs.existsSync(helloRefPath)) {
 function crossCorrelation(buf, ref) {
   let sum = 0;
   const len = Math.min(buf.length, ref.length);
-  for (let i = 0; i < len; i += 2) { // 16-bit PCM
+  for (let i = 0; i < len; i += 2) {
     const sampleBuf = buf.readInt16LE(i);
     const sampleRef = ref.readInt16LE(i);
     sum += sampleBuf * sampleRef;
   }
-  return sum / len;
+  const corr = sum / len;
+  console.log(`🔹 Cross-correlation: ${corr}`);
+  return corr;
 }
 
 // --- WebSocket приём аудио ---
+const AMPLITUDE_THRESHOLD = 500_000; // подберите опытным путём
 wss.on("connection", ws => {
   let file = null;
   let pcmPath = null;
@@ -93,7 +93,6 @@ wss.on("connection", ws => {
   startNewStream();
 
   ws.on("message", async data => {
-    // --- Конец потока ---
     if (data.toString() === "/end") {
       if (!file) return;
       file.end();
@@ -106,22 +105,19 @@ wss.on("connection", ws => {
           if (!fs.existsSync(oggPath)) return console.error("❌ No OGG created");
 
           console.log(`✅ Converted to OGG: ${path.basename(oggPath)}`);
-
           const text = await recognizeOgg(oggPath);
 
           // Отправка стримеру
           ws.send(JSON.stringify({ type: "stt_result", text }));
 
           // Broadcast всем клиентам
-          if (wss.clients.size > 0) {
-            wss.clients.forEach(client => {
-              if (client.readyState === client.OPEN) {
-                client.send(JSON.stringify({ type: "stt_broadcast", text }));
-              }
-            });
-          }
+          wss.clients.forEach(client => {
+            if (client.readyState === client.OPEN) {
+              client.send(JSON.stringify({ type: "stt_broadcast", text }));
+            }
+          });
 
-          startNewStream(); // новый поток
+          startNewStream();
         }
       );
       return;
@@ -133,21 +129,21 @@ wss.on("connection", ws => {
       file.write(data);
       totalBytes += data.length;
 
-      // --- Амплитудная проверка слова "Привет" ---
+      // --- Амплитудная проверка "Привет" ---
       if (helloRef) {
         amplitudeBuffer = Buffer.concat([amplitudeBuffer, data]);
-        if (amplitudeBuffer.length >= helloRef.length) {
-          const corr = crossCorrelation(amplitudeBuffer, helloRef);
-          if (corr > 1_000_000) { // порог подбирается опытным путём
+        while (amplitudeBuffer.length >= helloRef.length) {
+          const corr = crossCorrelation(amplitudeBuffer.slice(0, helloRef.length), helloRef);
+          if (corr > AMPLITUDE_THRESHOLD) {
             console.log("🟢 Обнаружено слово 'Привет'!");
             wss.clients.forEach(client => {
               if (client.readyState === 1) {
                 client.send(JSON.stringify({ emotion: "greeting" }));
               }
             });
-            amplitudeBuffer = Buffer.alloc(0);
+            amplitudeBuffer = amplitudeBuffer.slice(helloRef.length);
           } else {
-            amplitudeBuffer = amplitudeBuffer.slice(amplitudeBuffer.length / 2);
+            amplitudeBuffer = amplitudeBuffer.slice(Math.floor(amplitudeBuffer.length / 2));
           }
         }
       }
