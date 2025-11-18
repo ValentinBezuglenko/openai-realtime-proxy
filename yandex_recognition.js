@@ -52,7 +52,7 @@ async function recognizeOgg(oggPath) {
 }
 
 // --- Загружаем эталон для слова "Привет" ---
-const helloRefPath = path.join(__dirname, "public/oog/hello_ref.pcm");
+const helloRefPath = path.join(__dirname, "public/ogg/hello_ref.pcm");
 let helloRef = null;
 if (fs.existsSync(helloRefPath)) {
   helloRef = fs.readFileSync(helloRefPath);
