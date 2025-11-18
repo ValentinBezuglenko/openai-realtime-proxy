@@ -19,6 +19,8 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 
 // --- Создаём сервер HTTP для Express и WS ---
 const server = createServer(app);
+
+// --- WebSocketServer на том же сервере ---
 const wss = new WebSocketServer({ server });
 console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
@@ -33,6 +35,19 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
+// --- Ключевые слова для эмоций ---
+const emotionKeywords = {
+  greeting: ["Привет, "хай", "здарова", "ёня"],
+  happy: ["ура", "супер", "здорово"],
+  sad: ["грустно", "печаль"],
+  angry: ["злюсь", "сердит", "дурак"],
+  laugh: ["ха-ха", "смешно", "смейся"],
+  sleep: ["спать", "сон", "спи"],
+  victory: ["победа", "выиграл"],
+  idle: []
+};
+
+// --- Функция распознавания OGG через Yandex STT ---
 async function recognizeOgg(oggPath) {
   const oggData = fs.readFileSync(oggPath);
   const response = await fetch(STT_URL, {
@@ -43,43 +58,18 @@ async function recognizeOgg(oggPath) {
     },
     body: oggData,
   });
+
   const text = await response.text();
   console.log("🗣️ Yandex STT response:", text);
   return text;
 }
 
-// --- Загружаем эталон для слова "Привет" ---
-const helloRefPath = path.join(__dirname, "public/ogg/hello_ref.pcm");
-let helloRef = null;
-if (fs.existsSync(helloRefPath)) {
-  helloRef = fs.readFileSync(helloRefPath);
-  console.log("✅ Эталон слова 'Привет' загружен");
-} else {
-  console.warn("⚠️ Эталон hello_ref.pcm не найден, амплитудная проверка не будет работать");
-}
-
-// --- Простая кросс-корреляция ---
-function crossCorrelation(buf, ref) {
-  let sum = 0;
-  const len = Math.min(buf.length, ref.length);
-  for (let i = 0; i < len; i += 2) {
-    const sampleBuf = buf.readInt16LE(i);
-    const sampleRef = ref.readInt16LE(i);
-    sum += sampleBuf * sampleRef;
-  }
-  const corr = sum / len;
-  console.log(`🔹 Cross-correlation: ${corr}`);
-  return corr;
-}
-
 // --- WebSocket приём аудио ---
-const AMPLITUDE_THRESHOLD = 500_000; // подберите опытным путём
 wss.on("connection", ws => {
   let file = null;
   let pcmPath = null;
   let oggPath = null;
   let totalBytes = 0;
-  let amplitudeBuffer = Buffer.alloc(0);
 
   function startNewStream() {
     const timestamp = Date.now();
@@ -93,11 +83,13 @@ wss.on("connection", ws => {
   startNewStream();
 
   ws.on("message", async data => {
+    // --- Конец потока ---
     if (data.toString() === "/end") {
       if (!file) return;
       file.end();
       console.log(`⏹ Stream ended: ${path.basename(pcmPath)} (total: ${totalBytes})`);
 
+      // --- Конвертация PCM в OGG ---
       exec(
         `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
         async err => {
@@ -105,19 +97,50 @@ wss.on("connection", ws => {
           if (!fs.existsSync(oggPath)) return console.error("❌ No OGG created");
 
           console.log(`✅ Converted to OGG: ${path.basename(oggPath)}`);
+
+          // --- Распознаём через Yandex STT ---
           const text = await recognizeOgg(oggPath);
 
-          // Отправка стримеру
+          // --- Определяем эмоции по ключевым словам ---
+          const detectedEmotions = [];
+          try {
+            const parsed = JSON.parse(text);
+            const recognized = parsed.result || "";
+
+            for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
+              for (const kw of keywords) {
+                if (recognized.includes(kw)) {
+                  detectedEmotions.push(emotion);
+                  break;
+                }
+              }
+            }
+          } catch {
+            // Если JSON не распарсить, ищем просто по тексту
+            for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
+              for (const kw of keywords) {
+                if (text.includes(kw)) {
+                  detectedEmotions.push(emotion);
+                  break;
+                }
+              }
+            }
+          }
+
+          // --- Отправка результата стримеру ---
           ws.send(JSON.stringify({ type: "stt_result", text }));
 
-          // Broadcast всем клиентам
-          wss.clients.forEach(client => {
-            if (client.readyState === client.OPEN) {
-              client.send(JSON.stringify({ type: "stt_broadcast", text }));
-            }
+          // --- Отправка эмоций всем клиентам ---
+          detectedEmotions.forEach(emotion => {
+            console.log(`🟢 Обнаружена эмоция '${emotion}'`);
+            wss.clients.forEach(client => {
+              if (client.readyState === 1) {
+                client.send(JSON.stringify({ emotion }));
+              }
+            });
           });
 
-          startNewStream();
+          startNewStream(); // новый поток
         }
       );
       return;
@@ -128,25 +151,6 @@ wss.on("connection", ws => {
       if (!file) startNewStream();
       file.write(data);
       totalBytes += data.length;
-
-      // --- Амплитудная проверка "Привет" ---
-      if (helloRef) {
-        amplitudeBuffer = Buffer.concat([amplitudeBuffer, data]);
-        while (amplitudeBuffer.length >= helloRef.length) {
-          const corr = crossCorrelation(amplitudeBuffer.slice(0, helloRef.length), helloRef);
-          if (corr > AMPLITUDE_THRESHOLD) {
-            console.log("🟢 Обнаружено слово 'Привет'!");
-            wss.clients.forEach(client => {
-              if (client.readyState === 1) {
-                client.send(JSON.stringify({ emotion: "greeting" }));
-              }
-            });
-            amplitudeBuffer = amplitudeBuffer.slice(helloRef.length);
-          } else {
-            amplitudeBuffer = amplitudeBuffer.slice(Math.floor(amplitudeBuffer.length / 2));
-          }
-        }
-      }
     }
   });
 
