@@ -45,7 +45,6 @@ async function recognizeOgg(oggPath) {
     },
     body: oggData,
   });
-
   const text = await response.text();
   console.log("🗣️ Yandex STT response:", text);
   return text;
@@ -88,17 +87,25 @@ wss.on("connection", ws => {
           // Отправка стримеру
           ws.send(JSON.stringify({ type: "stt_result", text }));
 
-          // Broadcast всем клиентам (один раз)
-          if (wss.clients.size > 0) {
-            console.log("📢 Broadcast to all clients:", text);
-            wss.clients.forEach(client => {
-              if (client.readyState === client.OPEN) {
-                client.send(JSON.stringify({ type: "stt_broadcast", text }));
-              }
-            });
+          // Определяем эмоцию по ключевым словам
+          let emotion = null;
+          if (text) {
+            const textLower = text.toLowerCase();
+            if (textLower.includes("привет")) emotion = "greeting";
+            else if (textLower.includes("смех")) emotion = "laugh";
+            else if (textLower.includes("сон")) emotion = "sleep";
           }
 
-          // Начинаем новый поток для следующего аудио
+          // Отправка эмоции всем клиентам ESP
+          if (emotion) {
+            const payload = { emotion };
+            wss.clients.forEach(client => {
+              if (client.readyState === client.OPEN) client.send(JSON.stringify(payload));
+            });
+            console.log("📢 Отправляем эмоцию:", emotion);
+          }
+
+          // Начинаем новый поток
           startNewStream();
         }
       );
@@ -123,12 +130,31 @@ const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] 
 socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
 socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
 
-// --- Ретрансляция событий от backend ---
+// --- Ретрансляция событий от backend с новыми эмоциями ---
 socket.on("/child/game-level/action", msg => {
   console.log("📩 Событие:", msg);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify(msg));
-  });
+
+  // Определяем эмоцию
+  let emotion = null;
+  if (msg.type === "success") emotion = "happy";
+  else if (msg.type === "fail") emotion = "sad";
+  else if (msg.type === "completed") emotion = "victory";
+
+  if (msg.text) {
+    const textLower = msg.text.toLowerCase();
+    if (textLower.includes("привет")) emotion = "greeting";
+    else if (textLower.includes("смех")) emotion = "laugh";
+    else if (textLower.includes("сон")) emotion = "sleep";
+  }
+
+  // Отправляем только валидные эмоции
+  if (emotion) {
+    const payload = { emotion };
+    wss.clients.forEach(client => {
+      if (client.readyState === client.OPEN) client.send(JSON.stringify(payload));
+    });
+    console.log("📢 Отправляем эмоцию:", emotion);
+  }
 });
 
 // --- HTML-плеер для проверки ---
