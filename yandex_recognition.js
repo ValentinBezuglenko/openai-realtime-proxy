@@ -17,7 +17,6 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
-console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
@@ -50,8 +49,7 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
-// --- Игры и ключевые фразы ---
-const gameKeywords = {
+const gameCommands = {
   actions: ["запусти игру действия", "действия открой", "запусти действия", "открой действия"],
   compare: ["запусти игру сравнение", "сравнение открой", "открой сравнение"],
   differences: ["запусти игру отличия", "отличия открой", "открой отличия"],
@@ -61,11 +59,9 @@ const gameKeywords = {
 };
 
 function detectGameCommand(text) {
-  const recognized = text.toLowerCase();
-  for (const [game, phrases] of Object.entries(gameKeywords)) {
-    for (const phrase of phrases) {
-      if (recognized.includes(phrase)) return game;
-    }
+  const lower = text.toLowerCase();
+  for (const [game, phrases] of Object.entries(gameCommands)) {
+    if (phrases.some(p => lower.includes(p))) return game;
   }
   return null;
 }
@@ -96,16 +92,11 @@ wss.on("connection", ws => {
           const chunks = [];
           ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
           ffmpeg.stderr.on("data", () => {});
-          ffmpeg.on("close", code => code === 0
-            ? resolve(Buffer.concat(chunks))
-            : reject(new Error("ffmpeg failed"))
-          );
+          ffmpeg.on("close", code => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error("ffmpeg failed")));
 
           ffmpeg.stdin.write(pcmBuffer);
           ffmpeg.stdin.end();
         });
-
-        console.log(`✅ PCM конвертирован в OGG (в памяти)`);
 
         const response = await fetch(STT_URL, {
           method: "POST",
@@ -115,55 +106,48 @@ wss.on("connection", ws => {
           },
           body: oggBuffer
         });
-        const text = await response.text();
-        console.log("🗣️ Yandex STT response:", text);
 
+        const textRaw = await response.text();
+        let recognizedText = textRaw;
         let detectedEmotions = [];
+
         try {
-          const parsed = JSON.parse(text);
-          detectedEmotions = detectEmotions(parsed.result || "");
+          const parsed = JSON.parse(textRaw);
+          recognizedText = parsed.result || textRaw;
+          detectedEmotions = detectEmotions(recognizedText);
         } catch {
-          detectedEmotions = detectEmotions(text);
+          detectedEmotions = detectEmotions(textRaw);
         }
 
-        ws.send(JSON.stringify({ type: "stt_result", text }));
+        ws.send(JSON.stringify({ type: "stt_result", text: recognizedText }));
 
-        // --- Отправка эмоций всем клиентам ---
         detectedEmotions.forEach(emotion => {
-          console.log(`🟢 Обнаружена эмоция '${emotion}'`);
           wss.clients.forEach(client => {
             if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
           });
         });
 
-        // --- Проверка на команду игры ---
-        const game = detectGameCommand(text);
+        const game = detectGameCommand(recognizedText);
         if (game) {
-          ws.send(JSON.stringify({ type: "run_game_action", game }));
+          wss.clients.forEach(client => {
+            if (client.readyState === 1) client.send(JSON.stringify({ type: "run_game_action", game }));
+          });
         }
 
-      } catch (err) {
-        console.error("❌ Ошибка конвертации или распознавания:", err);
-      }
+      } catch (err) {}
 
       return;
     }
 
-    if (data instanceof Buffer) {
-      pcmChunks.push(data);
-    }
+    if (data instanceof Buffer) pcmChunks.push(data);
   });
 
-  ws.on("close", () => {
-    pcmChunks = [];
-    console.log("🔌 Client disconnected");
-  });
+  ws.on("close", () => pcmChunks = []);
 });
 
 const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
-socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
-socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
-
+socket.on("connect", () => {});
+socket.on("disconnect", () => {});
 socket.on("/child/game-level/action", msg => {
   let emotion = null;
   switch (msg.type) {
@@ -172,18 +156,10 @@ socket.on("/child/game-level/action", msg => {
     case "completed": emotion = "victory"; break;
   }
   if (emotion) {
-    console.log(`📩 Эмоция от backend: ${emotion}`);
     wss.clients.forEach(client => {
       if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
     });
   }
 });
 
-const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-setInterval(() => {
-  fetch(SELF_URL)
-    .then(() => console.log("💓 Self ping OK"))
-    .catch(err => console.log("⚠️ Self ping error:", err.message));
-}, 4 * 60 * 1000);
-
-server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+server.listen(PORT, () => {});
