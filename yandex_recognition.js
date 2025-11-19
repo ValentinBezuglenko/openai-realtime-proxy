@@ -155,7 +155,7 @@ socket.on("/child/game-level/action", msg => {
   let emotion = null;
   switch (msg.type) {
     case "fail": emotion = "sad"; break;
-    case "win": emotion = "happy"; break;
+    case "success": emotion = "happy"; break;
     case "completed": emotion = "victory"; break;
   }
   if (emotion) {
